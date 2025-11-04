@@ -260,11 +260,11 @@ class DecoderLayer(nn.Module):
         self.sublayer = clones(SublayerConnection(size, dropout), 3)
  
     def forward(self, x, memory, src_mask, tgt_mask):
-        m = memory
+        m = memory # visual features
         if hasattr(self, 'self_attn'):
             x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, tgt_mask))
 
-        x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask))
+        x = self.sublayer[1](x, lambda x: self.src_attn(x, m, m, src_mask)) # cross-attend to visual
         return self.sublayer[2](x, self.feed_forward)
 
 class PositionwiseFeedForward(nn.Module):
@@ -282,7 +282,7 @@ class PositionwiseFeedForward(nn.Module):
     def forward(self, x):
         return self.w_2(self.dropout(self.act(self.w_1(x))))
 
-class PositionalEncoding(nn.Module):
+class PositionalEncoding(nn.Module): # 시간축 token sequence용
     "Implement the PE function."
     def __init__(self, d_model, dropout, max_len=5000):
         super(PositionalEncoding, self).__init__()
@@ -365,7 +365,7 @@ class Conv3d(nn.Module):
             out += x
         return self.act(out)
 
-class CNN_3d(nn.Module):
+class CNN_3d(nn.Module): # B, C, T, H, W -> B, T, C
     def __init__(self, d_model):
         super().__init__()
 
@@ -384,7 +384,7 @@ class CNN_3d(nn.Module):
             Conv3d(512, 512, kernel_size=(1, 3, 3), stride=1, padding=(0, 1, 1), residual=True),
 
             Conv3d(512, 512, kernel_size=(1, 3, 3), stride=(1, 2, 2), padding=(0, 1, 1)), # 3, 3
-            Conv3d(512, d_model, kernel_size=(1, 3, 3), stride=1, padding=(0, 0, 0)),)
+            Conv3d(512, d_model, kernel_size=(1, 3, 3), stride=1, padding=(0, 0, 0)),) # 1, 1
 
     @autocast('cuda')
     def forward(self, faces, mask):
@@ -396,28 +396,28 @@ class CNN_3d(nn.Module):
 
 ### VTP modules:
 
-class PositionEmbeddingLearned(nn.Module):
+class PositionEmbeddingLearned(nn.Module): # 공간축 (h, w)용
     """
     Absolute pos embedding, learned.
     """
     def __init__(self, num_pos_feats):
         super().__init__()
-        self.row_embed = nn.Embedding(64, num_pos_feats)
+        self.row_embed = nn.Embedding(64, num_pos_feats) #CNN 채널 수의 절반
         self.col_embed = nn.Embedding(64, num_pos_feats)
 
     def forward(self, x):
-        h, w = x.shape[-2:]
-        i = torch.arange(w, device=x.device)
-        j = torch.arange(h, device=x.device)
-        x_emb = self.col_embed(i)
-        y_emb = self.row_embed(j)
-        pos = torch.cat([
-            x_emb.unsqueeze(0).repeat(h, 1, 1),
-            y_emb.unsqueeze(1).repeat(1, w, 1),
-        ], dim=-1).permute(2, 0, 1).unsqueeze(0).repeat(x.shape[0], 1, 1, 1)
+        h, w = x.shape[-2:] #[B, C, H, W] 중 [H, W] 
+        i = torch.arange(w, device=x.device) # column index = w
+        j = torch.arange(h, device=x.device) # row index = h
+        x_emb = self.col_embed(i) # get embedding for each column [w, num_pos_feats]
+        y_emb = self.row_embed(j) # get embedding for each row [h, num_pos_feats]
+        pos = torch.cat([ #embedding 축으로 concat -> 1/2D에서 D로 늘어남
+            x_emb.unsqueeze(0).repeat(h, 1, 1), # [h <-, w, num_pos_feats]
+            y_emb.unsqueeze(1).repeat(1, w, 1), # [h, ->w, num_pos_feats]
+        ], dim=-1).permute(2, 0, 1).unsqueeze(0).repeat(x.shape[0], 1, 1, 1)  # [B, D, H, W]
         return x + pos
 
-class CNN_3d_featextractor(nn.Module):
+class CNN_3d_featextractor(nn.Module): # final embedding dim = B,C,T,H,W
     def __init__(self, d_model, till):
         super().__init__()
         layers = [Conv3d(3, 64, kernel_size=5, stride=(1, 2, 2), padding=2)]  # 48, 48
@@ -489,7 +489,7 @@ class VTP_wrapper(nn.Module):
         for l, fs in zip(lens, faces):
             indiv_faces.append(fs[:l])
 
-        face_tokens = torch.cat(indiv_faces, dim=0) # (B*, C, H, W)
+        face_tokens = torch.cat(indiv_faces, dim=0) # (B*, C, H, W) 
 
         face_tokens = self.hwposition(face_tokens)
 
@@ -532,8 +532,8 @@ class VTP(nn.Module):
         cur_res = initial_resolution
         for l, dim, h, p in zip(num_layers, dims, heads, patch_sizes):
             input_dim = (cur_dim * p * p)
-            if input_dim == dim:
-                self.patch_projectors.append(Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', 
+            if input_dim == dim: #dim = transformer input dimr
+                self.patch_projectors.append(Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)',  #[B, C, H', W'] -> [B, h*w, p1*p2*C]
                                                         p1 = p, p2 = p))
             else:
                 self.patch_projectors.append(nn.Sequential(

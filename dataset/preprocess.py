@@ -7,6 +7,7 @@ import subprocess
 from scipy import signal
 from glob import glob
 from shutil import copy
+from tqdm import tqdm  # [추가] 진행바
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Preprocess video files for lipreading')
@@ -19,6 +20,9 @@ def parse_args():
     parser.add_argument('--nshard', type=int, default=1, help='Total number of shards for distributed processing')
     args = parser.parse_args()
     return args
+
+
+# python /mnt/aix7804/multivsr/dataset/preprocess.py --videos_folder /mnt/aix7804/multivsr/dataset/data/videos --data_root /mnt/aix7804/multivsr --temp_dir /mnt/aix7804/multivsr/dataset/data/temp --frame_rate 25 --rank 
 
 args = parse_args()
 
@@ -33,6 +37,11 @@ def crop_video(track):
     videofile = os.path.join(args.videos_folder, track.split('/')[-2] + '.mp4')
     temp_videofile = os.path.join(args.temp_dir, track.split('/')[-2] + '.mp4')
 
+    # [추가] 원본 비디오가 없으면 조용히 스킵
+    if not os.path.exists(videofile):
+        print(f"[rank {args.rank}] skip - missing source video: {videofile}")
+        return
+
     command = [
         'ffmpeg',
         '-i', videofile,
@@ -40,12 +49,16 @@ def crop_video(track):
         '-y',  # Overwrite if exists
         temp_videofile
     ]
-    subprocess.call(command)
+    # [개선] ffmpeg 반환코드 확인해서 실패 시 스킵
+    ret = subprocess.call(command)
+    if ret != 0:
+        print(f"[rank {args.rank}] skip - ffmpeg failed for {videofile}")
+        return
     
     videofile = temp_videofile
 
     if not os.path.exists(videofile):
-        raise ValueError(f"temp video file {videofile} could not be created")
+        print(f"[rank {args.rank}] skip - temp video not created: {videofile}")
         return
     
     cropfile = track.replace('.pckl', '.mp4')
@@ -55,10 +68,32 @@ def crop_video(track):
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     vOut = cv2.VideoWriter(cropfile, fourcc, args.frame_rate, (224,224))
+    if not vOut.isOpened():
+        print(f"[rank {args.rank}] skip - failed to open output video {cropfile}")
+        return
+
+    track_file = track
 
     dets = {'x':[], 'y':[], 's':[]}
-    with open(track, 'rb') as f:
-      track = pickle.load(f)
+    try:
+        with open(track_file, 'rb') as f:
+            track_data = pickle.load(f)
+    except Exception as exc:
+        print(f"[rank {args.rank}] skip - failed to load track {track_file}: {exc}")
+        vOut.release()
+        return
+
+    if not isinstance(track_data, dict) or 'bbox' not in track_data or 'frame' not in track_data:
+        print(f"[rank {args.rank}] skip - invalid track format: {track_file}")
+        vOut.release()
+        return
+
+    if len(track_data['bbox']) == 0 or len(track_data['frame']) == 0:
+        print(f"[rank {args.rank}] skip - empty track data: {track_file}")
+        vOut.release()
+        return
+
+    track = track_data
 
     for det in track['bbox']:
 
@@ -67,24 +102,46 @@ def crop_video(track):
       dets['x'].append((det[0]+det[2])/2) # crop center y
 
     # Smooth detections
-    dets['s'] = signal.medfilt(dets['s'],kernel_size=13)   
-    dets['x'] = signal.medfilt(dets['x'],kernel_size=13)
-    dets['y'] = signal.medfilt(dets['y'],kernel_size=13)
+    try:
+        dets['s'] = signal.medfilt(dets['s'],kernel_size=13)   
+        dets['x'] = signal.medfilt(dets['x'],kernel_size=13)
+        dets['y'] = signal.medfilt(dets['y'],kernel_size=13)
+    except ValueError as exc:
+        print(f"[rank {args.rank}] skip - smoothing failed for {track_file}: {exc}")
+        vOut.release()
+        return
 
     
     frame_no_to_start = track['frame'][0]
 
     video_stream = cv2.VideoCapture(videofile)
+    if not video_stream.isOpened():
+        print(f"[rank {args.rank}] skip - cannot open video stream: {videofile}")
+        vOut.release()
+        return
     video_stream.set(cv2.CAP_PROP_POS_FRAMES, frame_no_to_start)
-    for fidx, frame in enumerate(range(track['frame'][0], track['frame'][-1] + 1)):
 
+    # [추가] 프레임 범위에 tqdm 적용 - 각 rank마다 한 줄씩 표시
+    frame_range = range(track['frame'][0], track['frame'][-1] + 1)
+    for fidx, _ in enumerate(tqdm(frame_range,
+                                  desc=f"frames r{args.rank}",
+                                  unit="f",
+                                  position=args.rank,
+                                  leave=False)):
+      if fidx >= len(dets['s']):
+          print(f"[rank {args.rank}] warn - detection shorter than frame range for {videofile}")
+          break
       cs  = 0.4
 
       bs  = dets['s'][fidx]   # Detection box size
 
       bsi = int(bs*(1+2*cs))  # Pad videos by this amount 
 
-      image = video_stream.read()[1] #video_stream.next().asnumpy()[..., ::-1]
+      ok, image = video_stream.read()
+      if not ok or image is None:
+          # [추가] 프레임 read 실패하면 해당 클립 조용히 종료
+          print(f"[rank {args.rank}] warn - failed to read frame at idx {fidx}")
+          break
  
       frame = np.pad(image,((bsi,bsi),(bsi,bsi),(0,0)), 'constant', constant_values=(110,110))
 
@@ -93,22 +150,14 @@ def crop_video(track):
 
       face = frame[int(my-bs):int(my+bs*(1+2*cs)),int(mx-bs*(1+cs)):int(mx+bs*(1+cs))]
 
-      vOut.write(cv2.resize(face,(224,224)))
+      if face is not None and face.size != 0:
+        vOut.write(cv2.resize(face,(224,224)))
+      else:
+        print("Empty face at video %d"%videofile)
+        continue
     video_stream.release()
 
-    # audiotmp    = os.path.join(args.temp_dir, 'audio.wav')
-    # audiostart  = (track['frame'][0]) / args.frame_rate
-    # audioend    = (track['frame'][-1]+1) / args.frame_rate
-
     vOut.release()
-
-    # ========== CROP AUDIO FILE ==========
-
-    # command = ("ffmpeg -y -i %s -ss %.3f -to %.3f %s" % (os.path.join(args.temp_dir, 'audio.wav'),audiostart,audioend,audiotmp)) 
-    # output = subprocess.call(command, shell=True, stdout=None)
-
-    # ========== COMBINE AUDIO AND VIDEO FILES ==========
-    # copy(audiotmp, cropfile.replace('.mp4', '.wav'))
     
     print('Written %s'%cropfile)
 
@@ -124,5 +173,22 @@ if __name__ == "__main__":
     clips = clips[start_idx:end_idx]
     print(f"Rank {args.rank}: Processing {len(clips)} clips from index {start_idx} to {end_idx-1}")
 
-    for clip in clips:
-        crop_video(clip)
+    # [추가] 클립 진행률 tqdm
+    for clip in tqdm(clips,
+                     desc=f"clips r{args.rank}",
+                     unit="clip",
+                     position=args.rank):
+        try:
+            crop_video(clip)
+        except Exception as exc:
+            print(f"[rank {args.rank}] error - unexpected failure for {clip}: {exc}")
+
+
+
+"""
+python /mnt/aix7804/multivsr/dataset/preprocess.py \
+--videos_folder /mnt/aix7804/multivsr/dataset/data/videos \
+--data_root /mnt/aix7804/multivsr/dataset/data/metadata/multivsr \
+--temp_dir /mnt/aix7804/multivsr/dataset/data/temp \
+--frame_rate 25
+"""
