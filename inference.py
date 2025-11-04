@@ -64,15 +64,18 @@ def _parse_reference_text(txt_path: str):
 
 def _compute_wer(hypothesis: str, reference: str):
 	# Compute WER using editdistance
-	hyp_words = _normalize_text(hypothesis).split()
-	ref_words = _normalize_text(reference).split()
-	total_words = len(ref_words)
-	if total_words == 0:
-		return 0.0, 0, 0
-	errors = editdistance.eval(hyp_words, ref_words)
-	wer = errors / total_words
-	return wer, errors, total_words
-
+    hyp_words = _normalize_text(hypothesis).split()
+    ref_words = _normalize_text(reference).split()
+    errors = editdistance.eval(hyp_words, ref_words)
+    total_words = len(ref_words)
+    if total_words == 0:
+        if len(hyp_words) == 0: # if hyp, pred == None -> 0%
+            return 0.0, 0, 0 
+        else:
+            return 1.0, errors, 0  # if pred exists but ref is None -> 100%
+    else:
+        wer = errors / total_words
+        return wer, errors, total_words
 
 def _collect_video_paths(args):
 	if args.fpath and args.input_dir:
