@@ -16,6 +16,7 @@ from torch.amp import autocast
 from search import beam_search
 
 from decord import VideoReader
+import editdistance
 
 _VIDEO_EXTS = ('.mp4', '.mov', '.mkv', '.avi', '.webm')
 
@@ -61,33 +62,16 @@ def _parse_reference_text(txt_path: str):
 	return None, lang
 
 
-def _wer_details(ref_words, hyp_words):
-	"""Compute S, D, I and WER using dynamic programming."""
-	n = len(ref_words)
-	m = len(hyp_words)
-	dp = [[(0, 0, 0, 0) for _ in range(m + 1)] for _ in range(n + 1)]
-	for i in range(1, n + 1):
-		c, S, D, I = dp[i - 1][0]
-		dp[i][0] = (c + 1, S, D + 1, I)
-	for j in range(1, m + 1):
-		c, S, D, I = dp[0][j - 1]
-		dp[0][j] = (c + 1, S, D, I + 1)
-	for i in range(1, n + 1):
-		for j in range(1, m + 1):
-			c_sub, S_sub, D_sub, I_sub = dp[i - 1][j - 1]
-			if ref_words[i - 1] == hyp_words[j - 1]:
-				best = (c_sub, S_sub, D_sub, I_sub)
-			else:
-				best = (c_sub + 1, S_sub + 1, D_sub, I_sub)
-			c_ins, S_ins, D_ins, I_ins = dp[i][j - 1]
-			cand_ins = (c_ins + 1, S_ins, D_ins, I_ins + 1)
-			c_del, S_del, D_del, I_del = dp[i - 1][j]
-			cand_del = (c_del + 1, S_del, D_del + 1, I_del)
-			best = min(best, cand_ins, cand_del, key=lambda x: (x[0], x[1] + x[2] + x[3]))
-			dp[i][j] = best
-	cost, S, D, I = dp[n][m]
-	wer = cost / max(1, n)
-	return wer, S, D, I, n
+def _compute_wer(hypothesis: str, reference: str):
+	# Compute WER using editdistance
+	hyp_words = _normalize_text(hypothesis).split()
+	ref_words = _normalize_text(reference).split()
+	total_words = len(ref_words)
+	if total_words == 0:
+		return 0.0, 0, 0
+	errors = editdistance.eval(hyp_words, ref_words)
+	wer = errors / total_words
+	return wer, errors, total_words
 
 
 def _collect_video_paths(args):
@@ -148,8 +132,8 @@ def run(faces, model, visual_encoder):
 		chunk_faces = faces[:, :, i:i+chunk_frames]
 		chunk_faces = chunk_faces.to(args.device)
 		feats = visual_encoder(chunk_faces)
-
-		print("★★★", feats.shape)
+		# print("★★★", feats.shape)
+  
 		src_mask = torch.ones(1, 1, feats.shape[1]).long().to(args.device)
 		
 		encoder_output, src_mask = model.encode(feats, src_mask)
@@ -245,7 +229,7 @@ if __name__ == '__main__':
 	model, visual_encoder = load_models(args)
 
 	total = len(video_paths)
-	progress = tqdm(video_paths, desc="Inference", unit="video", ascii=('□', '■'))
+	progress = tqdm(video_paths, desc="Inference", unit="video")
 	overall_wers = []
 	lang_wers = defaultdict(list)
 	lang_hits = defaultdict(int)
@@ -293,10 +277,8 @@ if __name__ == '__main__':
 		progress.write("-------------------------------------------------------------------")
 
 		if ref_text:
-			ref_words = _normalize_text(ref_text).split()
-			hyp_words = _normalize_text(pred_text).split()
-			wer, S, D, I, N = _wer_details(ref_words, hyp_words)
-			progress.write(f"WER: {wer*100:.2f}%  (S={S}, D={D}, I={I}, N={N})")
+			wer, errors, total_words = _compute_wer(pred_text, ref_text)
+			progress.write(f"WER: {wer*100:.2f}%  (errors={errors}, words={total_words})")
 			overall_wers.append(wer)
 			lang_key = target_lang
 			lang_wers[lang_key].append(wer)
