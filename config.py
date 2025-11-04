@@ -38,9 +38,10 @@ def load_args():
   parser.add_argument('--file_list', type=str, help='Regex of video file paths relative to videos_folder')
 
   # inference params
-  parser.add_argument('--max_decode_len', type=int, default=100)
-  parser.add_argument('--beam_size', type=int, default=20, help='The beam width')
+  parser.add_argument('--max_decode_len', type=int, default=100) #★100에서 150으로 변경
+  parser.add_argument('--beam_size', type=int, default=20, help='The beam width') #★20에서 10으로 변경
   parser.add_argument('--fpath', type=str, default=None, help='file path for real-world inference')
+  parser.add_argument('--input_dir', type=str, default=None, help='Directory containing multiple videos for batch inference')
   parser.add_argument('--chunk_size', type=int, default=14, help='Chunk size for visual encoder')
   parser.add_argument('--start', type=float, default=0., help='start second for real-world inference')
   parser.add_argument('--end', type=float, default=100000., help='end second for real-world inference')
