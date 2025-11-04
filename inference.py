@@ -26,16 +26,24 @@ def _normalize_text(s: str) -> str:
 	return s.strip().lower()
 
 
-def _parse_reference_text(txt_path: str) -> str:
-	"""Parse reference transcript from a .txt file.
+def _parse_reference_text(txt_path: str):
+	"""Parse reference transcript and language code from a .txt file.
 	Prefers a line starting with 'Text:'; otherwise, concatenates WORD column.
+	Returns (normalized_text, language_code).
 	"""
+	text = None
+	lang = None
 	try:
 		with open(txt_path, 'r', encoding='utf-8') as f:
 			lines = [l.rstrip('\n') for l in f]
 		for line in lines:
 			if line.startswith('Text:'):
-				return _normalize_text(line.split('Text:', 1)[1])
+				text = _normalize_text(line.split('Text:', 1)[1])
+			elif line.startswith('Lang:'):
+				lang = line.split('Lang:', 1)[1].strip().lower()
+		if text:
+			return text, lang
+
 		words = []
 		in_table = False
 		for line in lines:
@@ -47,10 +55,10 @@ def _parse_reference_text(txt_path: str) -> str:
 				if parts:
 					words.append(parts[0])
 		if words:
-			return _normalize_text(' '.join(words))
+			return _normalize_text(' '.join(words)), lang
 	except Exception:
 		pass
-	return None
+	return None, lang
 
 
 def _wer_details(ref_words, hyp_words):
@@ -240,6 +248,7 @@ if __name__ == '__main__':
 	progress = tqdm(video_paths, desc="Inference", unit="video", ascii=('□', '■'))
 	overall_wers = []
 	lang_wers = defaultdict(list)
+	lang_hits = defaultdict(int)
 
 	for idx, video_path in enumerate(progress, start=1):
 		progress.set_postfix_str(f"{idx}/{total}")
@@ -265,15 +274,21 @@ if __name__ == '__main__':
 
 		base, _ = os.path.splitext(video_path)
 		ref_txt = base + '.txt'
-		ref_text = _parse_reference_text(ref_txt) if os.path.exists(ref_txt) else None
+		if os.path.exists(ref_txt):
+			ref_text, ref_lang = _parse_reference_text(ref_txt)
+		else:
+			ref_text, ref_lang = (None, None)
 
 		progress.write("-------------------------------------------------------------------")
 		progress.write("-------------------------------------------------------------------")
 		progress.write(f"Video: {video_path}")
-		progress.write(f"Language: {lang_id}")
+		target_lang = (ref_lang or args.lang_id or "unknown").strip() or "unknown"
+		pred_lang = (lang_id or "unknown").strip() or "unknown"
+		progress.write(f"Target language: {target_lang}")
+		progress.write(f"Predicted language: {pred_lang}")
 		if ref_text:
-			progress.write(f"Reference: {ref_text}")
-		progress.write(f"Prediction: {pred_text}")
+			progress.write(f"\n[Reference]: {ref_text}\n")
+		progress.write(f"[Prediction]: {pred_text}")
 		progress.write("-------------------------------------------------------------------")
 		progress.write("-------------------------------------------------------------------")
 
@@ -283,8 +298,10 @@ if __name__ == '__main__':
 			wer, S, D, I, N = _wer_details(ref_words, hyp_words)
 			progress.write(f"WER: {wer*100:.2f}%  (S={S}, D={D}, I={I}, N={N})")
 			overall_wers.append(wer)
-			lang_key = (lang_id or "unknown").strip() or "unknown"
+			lang_key = target_lang
 			lang_wers[lang_key].append(wer)
+			if target_lang != "unknown" and pred_lang == target_lang:
+				lang_hits[target_lang] += 1
 		else:
 			progress.write("No reference .txt found alongside input video; skipping WER.")
 
@@ -293,7 +310,8 @@ if __name__ == '__main__':
 			torch.cuda.empty_cache()
 
 	progress.close()
-	print("===================================================================")
+	print("-------------------------------------------------------------------")
+	print(f"Requested language: {args.lang_id or 'unknown'}")
 	if overall_wers:
 		avg_wer = float(np.mean(overall_wers)) * 100
 		print(f"Average WER: {avg_wer:.2f}% (videos with refs: {len(overall_wers)})")
@@ -301,6 +319,8 @@ if __name__ == '__main__':
 			print("Average WER by language:")
 			for lang, values in sorted(lang_wers.items()):
 				lang_avg = float(np.mean(values)) * 100
-				print(f"  {lang}: {lang_avg:.2f}% (n={len(values)})")
+				hits = lang_hits.get(lang, 0)
+				total = len(values)
+				print(f"  {lang}: {lang_avg:.2f}% (n={total}, correct={hits}/{total})")
 	else:
 		print("No reference transcripts found; WER summary unavailable.")
