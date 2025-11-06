@@ -33,7 +33,7 @@ args.temp_dir = os.path.join(args.temp_dir, f"rank{args.rank}_of_{args.nshard}")
 os.makedirs(args.temp_dir, exist_ok=True)
 
 
-def crop_video(track):
+def crop_video(track, args):
     videofile = os.path.join(args.videos_folder, track.split('/')[-2] + '.mp4')
     temp_videofile = os.path.join(args.temp_dir, track.split('/')[-2] + '.mp4')
 
@@ -173,15 +173,20 @@ if __name__ == "__main__":
     clips = clips[start_idx:end_idx]
     print(f"Rank {args.rank}: Processing {len(clips)} clips from index {start_idx} to {end_idx-1}")
 
-    # [추가] 클립 진행률 tqdm
-    for clip in tqdm(clips,
-                     desc=f"clips r{args.rank}",
-                     unit="clip",
-                     position=args.rank):
-        try:
-            crop_video(clip)
-        except Exception as exc:
-            print(f"[rank {args.rank}] error - unexpected failure for {clip}: {exc}")
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    max_workers = 40  # 원하는 worker 수로 설정 (예: 16)
+
+    print(f"Using {max_workers} workers for parallel processing.")
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        future_to_clip = {executor.submit(crop_video, clip, args): clip for clip in clips}
+        for future in tqdm(as_completed(future_to_clip), total=len(future_to_clip), desc=f"clips r{args.rank}", unit="clip"):
+            clip = future_to_clip[future]
+            try:
+                future.result()
+            except Exception as exc:
+                print(f"[rank {args.rank}] error - failed processing {clip}: {exc}")
 
 
 

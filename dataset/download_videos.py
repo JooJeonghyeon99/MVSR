@@ -18,13 +18,13 @@ args = parser.parse_args()
 
 
 def is_valid_video(file_path):
-    """Check if video file exists and playable (duration only)"""
+# Check if video file exists and playable (duration only)
     if not os.path.exists(file_path):
         return False
     try:
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", file_path],
+                "-of", "default=noprint_wrappers=1:nokey=1", file_path],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
@@ -38,7 +38,7 @@ def is_valid_video(file_path):
 
 
 def mp_handler(vid, result_dir):
-    """Handles downloading one video with retries and backoff"""
+# Handles downloading one video with retries and backoff
     try:
         vid = vid.strip()
         if not vid:
@@ -85,14 +85,14 @@ def mp_handler(vid, result_dir):
 
 
 def download_data(args):
-    """Main downloader"""
+# Main downloader
     with open(args.file, 'r', encoding='utf-8') as f:
         filelist = [x.strip() for x in f.readlines() if x.strip()]
 
     print(f"Total videos to download: {len(filelist)}")
     os.makedirs(args.video_root, exist_ok=True)
 
-    max_workers = 5  # 병렬 다운로드 개수
+    max_workers = 40  # 병렬 다운로드 개수
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(mp_handler, vid, args.video_root) for vid in filelist]
@@ -102,3 +102,5 @@ def download_data(args):
 
 if __name__ == '__main__':
     download_data(args)
+
+# python dataset/download_videos.py --file=dataset/filelists/ytids.txt --video_root=dataset/data/videos
