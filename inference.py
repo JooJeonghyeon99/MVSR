@@ -14,9 +14,8 @@ from config import load_args
 
 from torch.amp import autocast
 from search import beam_search
-
+from test_scores import levenshtein
 from decord import VideoReader
-import editdistance
 
 _VIDEO_EXTS = ('.mp4', '.mov', '.mkv', '.avi', '.webm')
 
@@ -61,21 +60,16 @@ def _parse_reference_text(txt_path: str):
 		pass
 	return None, lang
 
-
 def _compute_wer(hypothesis: str, reference: str):
-	# Compute WER using editdistance
-    hyp_words = _normalize_text(hypothesis).split()
-    ref_words = _normalize_text(reference).split()
-    errors = editdistance.eval(hyp_words, ref_words)
-    total_words = len(ref_words)
-    if total_words == 0:
-        if len(hyp_words) == 0: # if hyp, pred == None -> 0%
-            return 0.0, 0, 0 
-        else:
-            return 1.0, errors, 0  # if pred exists but ref is None -> 100%
-    else:
-        wer = errors / total_words
-        return wer, errors, total_words
+	"""Compute WER using Levenshtein algorithm"""
+	hyp_words = _normalize_text(hypothesis).split()
+	gt_words = _normalize_text(reference).split()
+	total_words = len(gt_words)
+	if total_words == 0:
+		return 0.0, 0, 0
+	errors = levenshtein(hyp_words, gt_words)
+	wer = errors / total_words
+	return wer, errors, total_words
 
 def _collect_video_paths(args):
 	if args.fpath and args.input_dir:
@@ -138,7 +132,6 @@ def run(faces, model, visual_encoder):
 		# print("★★★", feats.shape)
   
 		src_mask = torch.ones(1, 1, feats.shape[1]).long().to(args.device)
-		
 		encoder_output, src_mask = model.encode(feats, src_mask)
 		
 		with torch.no_grad():
@@ -150,13 +143,10 @@ def run(faces, model, visual_encoder):
 				beam_outs, beam_scores = forward_pass(model, encoder_output, src_mask, start_symbol)
 				out = beam_outs[0][0]
 	
-		pred = tokenizer.decode(out.cpu().numpy().tolist()[:-1]).strip().lower()
-
+		# pred = tokenizer.decode(out.cpu().numpy().tolist()[3:-1]).strip().lower()
+		# decode while letting the tokenizer drop special tokens (safer than manual slicing)
+		pred = tokenizer.decode(out.cpu().numpy().tolist(), skip_special_tokens=True).strip().lower()
 		pred = pred.replace("<|transcribe|><|notimestamps|>", " ")
-
-		if i==0:
-			lang_id = pred[2:4]
-		pred = pred[7:].strip()
 		preds.append(pred)
 
 	pred_text = ' '.join(preds)
@@ -237,6 +227,12 @@ if __name__ == '__main__':
 	lang_wers = defaultdict(list)
 	lang_hits = defaultdict(int)
 
+	total_errors = 0
+	total_words = 0
+	lang_errors = defaultdict(int)
+	lang_words = defaultdict(int)
+
+	# Read each video
 	for idx, video_path in enumerate(progress, start=1):
 		progress.set_postfix_str(f"{idx}/{total}")
 		progress.write("===================================================================")
@@ -280,13 +276,18 @@ if __name__ == '__main__':
 		progress.write("-------------------------------------------------------------------")
 
 		if ref_text:
-			wer, errors, total_words = _compute_wer(pred_text, ref_text)
-			progress.write(f"WER: {wer*100:.2f}%  (errors={errors}, words={total_words})")
+			wer, errors, words = _compute_wer(pred_text, ref_text)
+			progress.write(f"WER: {wer*100:.2f}%  (errors={errors}, words={words})")
 			overall_wers.append(wer)
 			lang_key = target_lang
 			lang_wers[lang_key].append(wer)
 			if target_lang != "unknown" and pred_lang == target_lang:
 				lang_hits[target_lang] += 1
+			# accumulate global error/word counts (like test_scores.py)
+			total_errors += errors
+			total_words += words
+			lang_errors[lang_key] += errors
+			lang_words[lang_key] += words
 		else:
 			progress.write("No reference .txt found alongside input video; skipping WER.")
 
@@ -297,15 +298,36 @@ if __name__ == '__main__':
 	progress.close()
 	print("-------------------------------------------------------------------")
 	print(f"Requested language: {args.lang_id or 'unknown'}")
-	if overall_wers:
-		avg_wer = float(np.mean(overall_wers)) * 100
-		print(f"Average WER: {avg_wer:.2f}% (videos with refs: {len(overall_wers)})")
-		if lang_wers:
-			print("Average WER by language:")
-			for lang, values in sorted(lang_wers.items()):
-				lang_avg = float(np.mean(values)) * 100
+	if total_words > 0:
+		global_wer = float(total_errors) / float(total_words) * 100
+		print(f"Global WER: {global_wer:.2f}% (errors={total_errors}, words={total_words})")
+		if lang_words:
+			print("Global WER by language:")
+			for lang in sorted(lang_words.keys()):
+				l_errors = lang_errors.get(lang, 0)
+				l_words = lang_words.get(lang, 0)
+				if l_words > 0:
+					l_wer = float(l_errors) / float(l_words) * 100
+				else:
+					l_wer = 0.0
 				hits = lang_hits.get(lang, 0)
-				total = len(values)
-				print(f"  {lang}: {lang_avg:.2f}% (n={total}, correct={hits}/{total})")
+				total_videos = len(lang_wers.get(lang, []))
+				print(f"  {lang}: {l_wer:.2f}% (errors={l_errors}, words={l_words}, n={total_videos}, correct={hits}/{total_videos})")
 	else:
-		print("No reference transcripts found; WER summary unavailable.")
+		print("No reference transcripts found. WER summary unavailable.")
+
+"""
+python /mnt/aix7804/multivsr/inference.py \
+--ckpt_path /mnt/aix7804/multivsr/checkpoints/model.pth \
+--visual_encoder_ckpt_path /mnt/aix7804/multivsr/checkpoints/feature_extractor.pth \
+--input_dir /mnt/aix7804/multivsr/dataset/data/videos_preprocessed\
+--fpath /mnt/aix7804/multivsr/dataset/data/videos_preprocessed/eXMRxhanW2E/00004.mp4 \
+--lang_id es
+"""
+
+"""
+python /mnt/aix7804/multivsr/inference.py \
+--ckpt_path /mnt/aix7804/multivsr/checkpoints/model.pth \
+--visual_encoder_ckpt_path /mnt/aix7804/multivsr/checkpoints/feature_extractor.pth \
+--input_dir /mnt/aix7804/multivsr/dataset/data/videos_preprocessed
+"""
