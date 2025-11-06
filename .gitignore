@@ -5,3 +5,4 @@ __pycache__
 dataset/data
 samples
 checkpoints
+dataset/filelists/cookies.txt
