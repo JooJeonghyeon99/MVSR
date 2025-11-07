@@ -37,7 +37,7 @@ def crop_video(track, args):
     videofile = os.path.join(args.videos_folder, track.split('/')[-2] + '.mp4')
     temp_videofile = os.path.join(args.temp_dir, track.split('/')[-2] + '.mp4')
 
-    # [추가] 원본 비디오가 없으면 조용히 스킵
+    # original video file이 없으면 skip
     if not os.path.exists(videofile):
         print(f"[rank {args.rank}] skip - missing source video: {videofile}")
         return
@@ -49,7 +49,7 @@ def crop_video(track, args):
         '-y',  # Overwrite if exists
         temp_videofile
     ]
-    # [개선] ffmpeg 반환코드 확인해서 실패 시 스킵
+    # ffmpeg return 코드 확인해서 실패 시 skip
     ret = subprocess.call(command)
     if ret != 0:
         print(f"[rank {args.rank}] skip - ffmpeg failed for {videofile}")
@@ -175,7 +175,7 @@ if __name__ == "__main__":
 
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    max_workers = 40  # 원하는 worker 수로 설정 (예: 16)
+    max_workers = 40
 
     print(f"Using {max_workers} workers for parallel processing.")
 
