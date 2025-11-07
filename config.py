@@ -1,3 +1,4 @@
+import argparse
 import configargparse
 
 pad_token = '<pad>'
@@ -45,6 +46,7 @@ def load_args():
   parser.add_argument('--chunk_size', type=int, default=14, help='Chunk size for visual encoder')
   parser.add_argument('--start', type=float, default=0., help='start second for real-world inference')
   parser.add_argument('--end', type=float, default=100000., help='end second for real-world inference')
+  parser.add_argument('--metrics_out', type=str, default=None, help='If provided, saves JSONL metrics under a dated folder (use either a directory or .jsonl path)')
 
   args = parser.parse_args()
 
