@@ -11,3 +11,4 @@ dataset/filelists/cookies.txt
 *.mp4
 *.pyc
 *.jpg
+*.pckl
