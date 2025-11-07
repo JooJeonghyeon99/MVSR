@@ -6,3 +6,6 @@ dataset/data
 samples
 checkpoints
 dataset/filelists/cookies.txt
+*.avi
+*.wav
+*.mp4
