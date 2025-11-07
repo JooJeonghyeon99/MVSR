@@ -16,7 +16,10 @@ cd "${SCRIPT_DIR}"
 for filepath in "${SRC_DIR}"/*.mp4; do
     found_any=true
     filename=$(basename "${filepath}")
-    reference="${filename%.mp4}.mp4"
+    # Use filename without extension as the stem
+    stem="${filename%.mp4}"
+    # If filenames are like <YOUTUBE_ID>_0004.mp4, keep only the ID before the first underscore
+    reference="${stem%%_*}"
 
     echo "Processing: ${filename} -> ${reference}"
 
