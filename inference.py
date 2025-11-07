@@ -143,10 +143,14 @@ def run(faces, model, visual_encoder):
 				beam_outs, beam_scores = forward_pass(model, encoder_output, src_mask, start_symbol)
 				out = beam_outs[0][0]
 	
-		# pred = tokenizer.decode(out.cpu().numpy().tolist()[3:-1]).strip().lower()
-		# decode while letting the tokenizer drop special tokens (safer than manual slicing)
-		pred = tokenizer.decode(out.cpu().numpy().tolist(), skip_special_tokens=True).strip().lower()
+		pred = tokenizer.decode(out.cpu().numpy().tolist()[:-1]).strip().lower()
 		pred = pred.replace("<|transcribe|><|notimestamps|>", " ")
+
+		if i == 0:
+			lang_id = pred[2:4]
+
+		pred = pred[7:].strip()
+
 		preds.append(pred)
 
 	pred_text = ' '.join(preds)
