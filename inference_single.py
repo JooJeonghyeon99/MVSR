@@ -1,10 +1,10 @@
 import numpy as np
-import torch, cv2, pickle, sys, os
+import torch, sys, os
 
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-from glob import glob
+from collections import defaultdict
 
 from models import build_model, build_visual_encoder
 
@@ -16,6 +16,8 @@ from search import beam_search
 from test_scores import levenshtein
 
 from decord import VideoReader
+
+_VIDEO_EXTS = ('.mp4', '.mov', '.mkv', '.avi', '.webm')
 
 args = load_args()
 
@@ -65,6 +67,34 @@ def _compute_wer(hypothesis: str, reference: str):
     wer = errors / total_words
     return wer, errors, total_words
 
+
+def _collect_video_paths(arg_obj):
+    if arg_obj.fpath and arg_obj.input_dir:
+        raise ValueError("Provide either --fpath or --input_dir, not both.")
+
+    if arg_obj.fpath:
+        if not os.path.isfile(arg_obj.fpath):
+            raise FileNotFoundError(f"Input file not found: {arg_obj.fpath}")
+        return [arg_obj.fpath]
+
+    if arg_obj.input_dir:
+        if not os.path.isdir(arg_obj.input_dir):
+            raise FileNotFoundError(f"Input directory not found: {arg_obj.input_dir}")
+
+        video_paths = []
+        for root, _, files in os.walk(arg_obj.input_dir):
+            for name in files:
+                if name.lower().endswith(_VIDEO_EXTS):
+                    video_paths.append(os.path.join(root, name))
+
+        video_paths.sort()
+        if not video_paths:
+            raise FileNotFoundError(f"No video files found under directory: {arg_obj.input_dir}")
+        return video_paths
+
+    raise ValueError("Specify --fpath for single inference or --input_dir for directory inference.")
+
+
 def forward_pass(model, encoder_output, src_mask, start_symbol):
 
     beam_outs, beam_scores = beam_search(
@@ -80,6 +110,7 @@ def forward_pass(model, encoder_output, src_mask, start_symbol):
         )
 
     return beam_outs, beam_scores
+
 
 def run(faces, model, visual_encoder):
     chunk_frames = args.chunk_size * 25
@@ -108,7 +139,6 @@ def run(faces, model, visual_encoder):
                 out = beam_outs[0][0]
 
         pred = tokenizer.decode(out.cpu().numpy().tolist()[:-1]).strip().lower()
-
         pred = pred.replace("<|transcribe|><|notimestamps|>", " ")
 
         if i == 0:
@@ -120,9 +150,10 @@ def run(faces, model, visual_encoder):
     pred_text = ' '.join(preds)
     return lang_id, pred_text
 
-def load_models(args):
-    model = build_model().to(args.device).eval()
-    checkpoint = torch.load(args.ckpt_path, map_location=args.device)
+
+def load_models(arg_obj):
+    model = build_model().to(arg_obj.device).eval()
+    checkpoint = torch.load(arg_obj.ckpt_path, map_location=arg_obj.device)
     s = checkpoint["state_dict"]
     new_s = {}
 
@@ -134,8 +165,8 @@ def load_models(args):
 
     model.load_state_dict(new_s)
 
-    visual_encoder = build_visual_encoder().to(args.device).eval()
-    s = torch.load(args.visual_encoder_ckpt_path, map_location=args.device)["state_dict"]
+    visual_encoder = build_visual_encoder().to(arg_obj.device).eval()
+    s = torch.load(arg_obj.visual_encoder_ckpt_path, map_location=arg_obj.device)["state_dict"]
     new_s = {}
     for k, v in s.items():
         if "face_encoder" not in k:
@@ -144,9 +175,10 @@ def load_models(args):
         new_s[k] = v
 
     visual_encoder.load_state_dict(new_s)
-    print("Following models are loaded successfully: \n{}\n{}".format(args.ckpt_path, args.visual_encoder_ckpt_path))
+    print("Following models are loaded successfully: \n{}\n{}".format(arg_obj.ckpt_path, arg_obj.visual_encoder_ckpt_path))
 
     return model, visual_encoder
+
 
 def read_video(fpath, start=0, end=None):
     start *= 25
@@ -174,47 +206,108 @@ def read_video(fpath, start=0, end=None):
 
     return faces
 
+
 if __name__ == '__main__':
     assert args.ckpt_path is not None, 'Specify a trained lip-reading checkpoint!'
     assert args.visual_encoder_ckpt_path is not None, 'Specify a trained feature extractor checkpoint!'
-    assert args.fpath is not None, 'Single-file inference expects --fpath to be set.'
+
+    try:
+        video_paths = _collect_video_paths(args)
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"[Error] {exc}")
+        sys.exit(1)
 
     model, visual_encoder = load_models(args)
 
-    faces = read_video(args.fpath, args.start, args.end)
-    print("Extracted frames from the input video: ", faces.shape)
+    total = len(video_paths)
+    progress = tqdm(video_paths, desc="Inference", unit="video")
+    lang_hits = defaultdict(int)
+    lang_wers = defaultdict(list)
+    overall_wers = []
+    total_errors = 0
+    total_words = 0
+    lang_errors = defaultdict(int)
+    lang_words = defaultdict(int)
 
-    print("Running inference...")
-    lang_id, pred_text = run(faces, model, visual_encoder)
+    for idx, video_path in enumerate(progress, start=1):
+        progress.set_postfix_str(f"{idx}/{total}")
+        progress.write("===================================================================")
+        progress.write(f"[{idx}/{total}] Processing: {video_path}")
 
-    base_dir = os.path.basename(os.path.dirname(args.fpath))
-    video_name = os.path.basename(args.fpath)
-    display_name = f"{base_dir}/{video_name}" if base_dir else video_name
+        try:
+            faces = read_video(video_path, args.start, args.end)
+        except Exception as exc:
+            progress.write(f"[Error] Failed to read video {video_path}: {exc}")
+            continue
 
-    base_path, _ = os.path.splitext(args.fpath)
-    ref_txt = base_path + '.txt'
-    if os.path.exists(ref_txt):
-        ref_text, ref_lang = _parse_reference_text(ref_txt)
+        progress.write(f"Extracted frames from the input video: {faces.shape}")
+        progress.write("Running inference...")
+        try:
+            lang_id, pred_text = run(faces, model, visual_encoder)
+        except Exception as exc:
+            progress.write(f"[Error] Inference failed for {video_path}: {exc}")
+            del faces
+            if args.device.startswith('cuda'):
+                torch.cuda.empty_cache()
+            continue
+
+        base, _ = os.path.splitext(video_path)
+        ref_txt = base + '.txt'
+        if os.path.exists(ref_txt):
+            ref_text, ref_lang = _parse_reference_text(ref_txt)
+        else:
+            ref_text, ref_lang = (None, None)
+
+        base_dir = os.path.basename(os.path.dirname(video_path))
+        video_name = os.path.basename(video_path)
+        display_name = f"{base_dir}/{video_name}" if base_dir else video_name
+
+        progress.write("-------------------------------------------------------------------")
+        progress.write("-------------------------------------------------------------------")
+        progress.write(f"Video: {display_name}")
+        target_lang = (ref_lang or args.lang_id or "unknown").strip() or "unknown"
+        pred_lang = (lang_id or "unknown").strip() or "unknown"
+        progress.write(f"Target language: {target_lang}")
+        progress.write(f"Predicted language: {pred_lang}")
+        if ref_text:
+            progress.write(f"\n[Reference]: {ref_text}\n")
+        progress.write(f"[Prediction]: {pred_text}")
+        progress.write("-------------------------------------------------------------------")
+        progress.write("-------------------------------------------------------------------")
+
+        if ref_text:
+            wer, errors, words = _compute_wer(pred_text, ref_text)
+            progress.write(f"WER: {wer*100:.2f}%  (errors={errors}, words={words})")
+            overall_wers.append(wer)
+            lang_key = target_lang
+            lang_wers[lang_key].append(wer)
+            if target_lang != "unknown" and pred_lang == target_lang:
+                lang_hits[target_lang] += 1
+            total_errors += errors
+            total_words += words
+            lang_errors[lang_key] += errors
+            lang_words[lang_key] += words
+        else:
+            progress.write("No reference .txt found alongside input video; skipping WER.")
+
+        del faces
+        if args.device.startswith('cuda'):
+            torch.cuda.empty_cache()
+
+    progress.close()
+    print("-------------------------------------------------------------------")
+    print(f"Requested language: {args.lang_id or 'unknown'}")
+    if total_words > 0:
+        global_wer = float(total_errors) / float(total_words) * 100
+        print(f"Global WER: {global_wer:.2f}% (errors={total_errors}, words={total_words})")
+        if lang_words:
+            print("Global WER by language:")
+            for lang in sorted(lang_words.keys()):
+                l_errors = lang_errors.get(lang, 0)
+                l_words = lang_words.get(lang, 0)
+                l_wer = float(l_errors) / float(l_words) * 100 if l_words > 0 else 0.0
+                hits = lang_hits.get(lang, 0)
+                total_videos = len(lang_wers.get(lang, []))
+                print(f"  {lang}: {l_wer:.2f}% (errors={l_errors}, words={l_words}, n={total_videos}, correct={hits}/{total_videos})")
     else:
-        ref_text, ref_lang = (None, None)
-
-    print("-------------------------------------------------------------------")
-    print("-------------------------------------------------------------------")
-    print(f"Video: {display_name}")
-    target_lang = (ref_lang or args.lang_id or "unknown").strip() or "unknown"
-    pred_lang = (lang_id or "unknown").strip() or "unknown"
-    print(f"Target language: {target_lang}")
-    print(f"Predicted language: {pred_lang}")
-    if ref_text:
-        print(f"\n[Reference]: {ref_text}\n")
-    print(f"[Prediction]: {pred_text}")
-    match = target_lang != "unknown" and pred_lang == target_lang
-    print(f"Language match: {'correct' if match else 'incorrect'}")
-    if ref_text:
-        wer, errors, words = _compute_wer(pred_text, ref_text)
-        print(f"WER: {wer*100:.2f}%  (errors={errors}, words={words})")
-        print(f"Language WER ({target_lang}): {wer*100:.2f}%")
-    else:
-        print("No reference .txt found alongside input video; skipping WER.")
-    print("-------------------------------------------------------------------")
-    print("-------------------------------------------------------------------")
+        print("No reference transcripts found. WER summary unavailable.")
