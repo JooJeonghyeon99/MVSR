@@ -10,3 +10,4 @@ dataset/filelists/cookies.txt
 *.wav
 *.mp4
 *.pyc
+*.jpg
