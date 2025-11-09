@@ -5,7 +5,6 @@ from datetime import datetime
 
 import torch.nn as nn
 import torch.nn.functional as F
-from tqdm import tqdm
 from collections import defaultdict
 
 from models import build_model, build_visual_encoder
@@ -217,35 +216,7 @@ if __name__ == '__main__':
         "hits": 0,
     })
 
-    metrics_path = None
-    if args.metrics_out:
-        run_time = datetime.now()
-        provided_path = os.path.expanduser(args.metrics_out)
-
-        metrics_label = None
-        metrics_root = provided_path
-
-        if provided_path.lower().endswith('.jsonl'):
-            metrics_root = os.path.dirname(provided_path)
-            stem = os.path.splitext(os.path.basename(provided_path))[0]
-            if stem:
-                metrics_label = stem
-
-        if not metrics_root:
-            metrics_root = '.'
-
-        date_dir = run_time.strftime("%Y-%m-%d")
-        time_dir = run_time.strftime("%H-%M-%S")
-        metrics_dir = os.path.join(metrics_root, date_dir)
-        os.makedirs(metrics_dir, exist_ok=True)
-
-        file_name = f"{metrics_label}.jsonl" if metrics_label else f"{time_dir}.jsonl"
-        metrics_path = os.path.join(metrics_dir, file_name)
-        print(f"[Metrics] Writing per-video logs to {metrics_path}")
-
-    progress = tqdm(enumerate(video_paths, start=1), total=total_videos, desc="Inference", unit="video")
-
-    for index, video_path in progress:
+    for index, video_path in enumerate(video_paths, start=1):
         total_samples += 1
         base, _ = os.path.splitext(video_path)
         ref_txt = base + '.txt'
@@ -257,16 +228,16 @@ if __name__ == '__main__':
         try:
             faces = read_video(video_path, args.start, args.end)
         except Exception as exc:
-            progress.write(f"[Error] Failed to read video {video_path}: {exc}")
+            print(f"[Error] Failed to read video {video_path}: {exc}")
             continue
 
-        progress.write(f"[{index}/{total_videos}] Processing: {video_path}")
-        progress.write(f"Extracted frames: {faces.shape}")
+        print(f"[{index}/{total_videos}] Processing: {video_path}")
+        print(f"Extracted frames: {faces.shape}")
 
         try:
             lang_id, pred_text = run(faces, model, visual_encoder)
         except Exception as exc:
-            progress.write(f"[Error] Inference failed for {video_path}: {exc}")
+            print(f"[Error] Inference failed for {video_path}: {exc}")
             del faces
             if args.device.startswith('cuda'):
                 torch.cuda.empty_cache()
@@ -276,13 +247,13 @@ if __name__ == '__main__':
         target_lang = (ref_lang or args.lang_id or "unknown").strip() or "unknown"
         pred_lang = (lang_id or "unknown").strip() or "unknown"
 
-        progress.write(SEPARATOR)
-        progress.write(f"Video: {display_name}")
-        progress.write(f"Target language: {target_lang}")
-        progress.write(f"Predicted language: {pred_lang}")
+        print(SEPARATOR)
+        print(f"Video: {display_name}")
+        print(f"Target language: {target_lang}")
+        print(f"Predicted language: {pred_lang}")
         if ref_text:
-            progress.write(f"Reference: {ref_text}")
-        progress.write(f"Prediction: {pred_text}")
+            print(f"Reference: {ref_text}")
+        print(f"Prediction: {pred_text}")
 
         video_errors = None
         video_words = None
@@ -307,34 +278,16 @@ if __name__ == '__main__':
             lang_entry["words"] += video_words
 
             video_wer = video_errors / video_words if video_words else 0.0
-            progress.write(f"WER: {video_wer*100:.2f}%  (errors={video_errors}, words={video_words})")
+            print(f"WER: {video_wer*100:.2f}%  (errors={video_errors}, words={video_words})")
         else:
-            progress.write("WER: N/A (no reference transcript)")
+            print("WER: N/A (no reference transcript)")
 
-        progress.write(SEPARATOR)
-
-        metrics_entry = {
-            "video": display_name,
-            "target_lang": target_lang,
-            "pred_lang": pred_lang,
-            "prediction": pred_text,
-            "reference": ref_text,
-            "has_reference": bool(ref_text),
-            "errors": video_errors,
-            "words": video_words,
-            "wer": video_wer,
-        }
-
-        if metrics_path:
-            with open(metrics_path, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(metrics_entry, ensure_ascii=False) + '\n')
+        print(SEPARATOR)
 
         successful_runs += 1
         del faces
         if args.device.startswith('cuda'):
             torch.cuda.empty_cache()
-
-    progress.close()
 
     if total_videos:
         print(f"Processed {successful_runs}/{total_videos} videos successfully.")
@@ -374,16 +327,3 @@ if __name__ == '__main__':
                 acc_str = "accuracy N/A"
 
             print(f"  {lang}: {wer_str}, {acc_str}")
-
-    if metrics_path:
-        summary_entry = {
-            "video": "__overall__",
-            "overall_wer": overall,
-            "total_errors": total_wer if num_words else None,
-            "total_words": num_words if num_words else None,
-            "total_videos": total_videos,
-            "successful_videos": successful_runs,
-            "language_accuracy": accuracy,
-        }
-        with open(metrics_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(summary_entry, ensure_ascii=False) + '\n')

@@ -40,7 +40,7 @@ def load_args():
 
   # inference params
   parser.add_argument('--max_decode_len', type=int, default=100)
-  parser.add_argument('--beam_size', type=int, default=20, help='The beam width')
+  parser.add_argument('--beam_size', type=int, default=10, help='The beam width')
   parser.add_argument('--fpath', type=str, default=None, help='file path for real-world inference')
   parser.add_argument('--input_dir', type=str, default=None, help='Directory containing multiple videos for batch inference')
   parser.add_argument('--chunk_size', type=int, default=14, help='Chunk size for visual encoder')
