@@ -25,7 +25,7 @@ _VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".avi", ".webm")
 args = load_args()
 
 
-def _normalize_text(s: str) -> str:
+def _normalize_text(s: str) -> str: #원래는 그냥 대체용이엇는데 손봐야 할듯 
     return s.strip().lower()
 
 
@@ -39,7 +39,7 @@ def _parse_reference_text(txt_path: str):
             if line.startswith('Text:'):
                 text = _normalize_text(line.split('Text:', 1)[1])
             elif line.startswith('Lang:'):
-                lang = line.split('Lang:', 1)[1].strip().lower()
+                lang = _normalize_text(line.split('Lang:', 1)[1])
         if text:
             return text, lang
 
@@ -339,6 +339,7 @@ if __name__ == '__main__':
     if total_videos:
         print(f"Processed {successful_runs}/{total_videos} videos successfully.")
 
+    overall = None
     if num_words:
         overall = total_wer / num_words
         print(f"Overall WER: {overall*100:.2f}% (errors={total_wer}, words={num_words})")
@@ -348,6 +349,8 @@ if __name__ == '__main__':
     if total_samples:
         total_hits = sum(stats["hits"] for stats in lang_stats.values())
         accuracy = total_hits / total_samples * 100
+    else:
+        accuracy = None
 
     if lang_stats:
         print("Language breakdown:")
@@ -371,3 +374,16 @@ if __name__ == '__main__':
                 acc_str = "accuracy N/A"
 
             print(f"  {lang}: {wer_str}, {acc_str}")
+
+    if metrics_path:
+        summary_entry = {
+            "video": "__overall__",
+            "overall_wer": overall,
+            "total_errors": total_wer if num_words else None,
+            "total_words": num_words if num_words else None,
+            "total_videos": total_videos,
+            "successful_videos": successful_runs,
+            "language_accuracy": accuracy,
+        }
+        with open(metrics_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(summary_entry, ensure_ascii=False) + '\n')
