@@ -12,4 +12,5 @@ dataset/filelists/cookies.txt
 *.pyc
 *.jpg
 *.pckl
+*.log
 *.jsonl
