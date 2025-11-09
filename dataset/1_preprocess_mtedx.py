@@ -1,3 +1,5 @@
+### pywork를 multivsr의 metadata 포맷으로 변환해서 pckl, mp4, txt 복사하기
+
 import argparse
 import os
 import pickle

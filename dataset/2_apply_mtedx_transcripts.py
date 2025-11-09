@@ -1,3 +1,4 @@
+### mtedx의 transcript를 lrs2 포맷으로 변환해서 metadata txt 파일에 채우기
 import argparse
 import csv
 from pathlib import Path
@@ -36,12 +37,28 @@ def parse_args():
         action="store_true",
         help="Create metadata directories/files if they do not already exist.",
     )
+    parser.add_argument(
+        "--keep_missing",
+        action="store_true",
+        help="Do not delete metadata files when transcripts are missing.",
+    )
+    parser.add_argument(
+        "--lang_id",
+        type=str,
+        default="fr",
+        help="Language code to write into metadata txt files.",
+    )
     return parser.parse_args()
 
 
 def load_transcripts(path, encoding="utf-8"):
     with open(path, "r", encoding=encoding) as f:
-        return [line.rstrip("\n") for line in f]
+        normalized = []
+        for line in f:
+            text = line.rstrip("\n").strip()
+            text = " ".join(text.split())
+            normalized.append(text)
+        return normalized
 
 
 def load_tsv_rows(path, encoding="utf-8"):
@@ -58,6 +75,36 @@ def clip_parts_from_path(path_str):
     if "_" not in clip_stem:
         return clip_stem, "00000"
     return clip_stem.rsplit("_", 1)
+
+
+def _delete_segment_files(metadata_root: Path, video_id: str, segment_id: str):
+    """Remove any existing metadata artifacts for a missing segment."""
+    base = metadata_root / video_id
+    removed = []
+    for ext in (".txt", ".mp4", ".pckl"):
+        target = base / f"{segment_id}{ext}"
+        if target.exists():
+            target.unlink()
+            removed.append(str(target))
+    # drop empty video directory to avoid clutter
+    try:
+        if base.exists() and not any(base.iterdir()):
+            base.rmdir()
+    except OSError:
+        pass
+    return removed
+
+
+def _prune_empty_txt(metadata_root: Path):
+    removed = []
+    for txt in metadata_root.rglob("*.txt"):
+        content = txt.read_text(encoding="utf-8", errors="ignore").strip()
+        if not content.startswith("Text:"):
+            segment_id = txt.stem
+            video_id = txt.parent.name
+            removed.extend(_delete_segment_files(metadata_root, video_id, segment_id))
+    if removed:
+        print(f"[cleanup] Removed {len(removed)} segments with missing transcripts.")
 
 
 def main():
@@ -88,17 +135,29 @@ def main():
                 dest_dir.mkdir(parents=True, exist_ok=True)
             else:
                 print(f"[{idx}] skip - missing directory {dest_dir}")
+                if not args.keep_missing:
+                    removed = _delete_segment_files(metadata_root, video_id, segment_id)
+                    if removed:
+                        print(f"[{idx}] delete - removed {len(removed)} files for {video_id}/{segment_id}")
                 missing += 1
                 continue
 
         if not dest_file.exists() and not args.create_missing:
             print(f"[{idx}] skip - missing file {dest_file}")
+            if not args.keep_missing:
+                removed = _delete_segment_files(metadata_root, video_id, segment_id)
+                if removed:
+                    print(f"[{idx}] delete - removed {len(removed)} files for {video_id}/{segment_id}")
             missing += 1
             continue
 
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest_file.write_text(text + "\n", encoding=args.encoding)
+        payload = f"Text:  {text}\nLang: {args.lang_id}\n"
+        dest_file.write_text(payload, encoding=args.encoding)
         written += 1
+
+    if not args.keep_missing:
+        _prune_empty_txt(metadata_root)
 
     print(f"Done. Updated {written} transcripts, skipped {missing}. Output root: {metadata_root}")
 

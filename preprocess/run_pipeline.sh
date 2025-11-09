@@ -19,7 +19,7 @@ for filepath in "${SRC_DIR}"/*.mp4; do
     # Use filename without extension as the stem
     stem="${filename%.mp4}"
     # If filenames are like <YOUTUBE_ID>_0004.mp4, keep only the ID before the first underscore
-    reference="${stem%%_*}"
+    reference="${stem}"
 
     echo "Processing: ${filename} -> ${reference}"
 
