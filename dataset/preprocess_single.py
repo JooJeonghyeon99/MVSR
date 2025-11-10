@@ -24,7 +24,11 @@ def parse_args():
 
 args = parse_args()
 
+
+# Append rank and shard to temp_dir to create unique directories for distributed processing
 args.temp_dir = os.path.join(args.temp_dir, f"rank{args.rank}_of_{args.nshard}")
+
+# Create the temporary directory if it doesn't exist
 os.makedirs(args.temp_dir, exist_ok=True)
 
 
@@ -139,7 +143,7 @@ def crop_video(track, args):
         dets['x'] = signal.medfilt(dets['x'], kernel_size=13)
         dets['y'] = signal.medfilt(dets['y'], kernel_size=13)
     except ValueError as exc:
-        print(f"[rank {args.rank}] skip - smoothing failed for {track_file}: {exc}")
+        print(f"[rank {args.rank}] skip - smoothing failed for {args.track_file}: {exc}")
         vOut.release()
         return
 
@@ -186,8 +190,15 @@ def crop_video(track, args):
 
     video_stream.release()
     vOut.release()
+    # ========== CROP AUDIO FILE ==========
 
-    print('Written %s' % cropfile)
+    # command = ("ffmpeg -y -i %s -ss %.3f -to %.3f %s" % (os.path.join(args.temp_dir, 'audio.wav'),audiostart,audioend,audiotmp)) 
+    # output = subprocess.call(command, shell=True, stdout=None)
+
+    # ========== COMBINE AUDIO AND VIDEO FILES ==========
+    # copy(audiotmp, cropfile.replace('.mp4', '.wav'))
+    
+    print('Written %s' %cropfile)
 
 
 if __name__ == "__main__":

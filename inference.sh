@@ -6,7 +6,6 @@ CKPT_PATH="/mnt/aix7804/multivsr/checkpoints/model.pth"
 VISUAL_CKPT_PATH="/mnt/aix7804/multivsr/checkpoints/feature_extractor.pth"
 SRC_DIR="/mnt/aix7804/multivsr/dataset/data/metadata/mtedx"
 METRICS_ROOT="/mnt/aix7804/multivsr/outputs/"
-
 RUN_DATE="$(date +%Y-%m-%d)"
 RUN_TIME="$(date +%H-%M-%S)"
 LOG_DIR="${METRICS_ROOT%/}/${RUN_DATE}"
