@@ -24,7 +24,9 @@ _VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".avi", ".webm")
 args = load_args()
 
 
-def _normalize_text(s: str) -> str: #원래는 그냥 대체용이엇는데 손봐야 할듯 
+def _normalize_text(s: str) -> str:
+    s = s.replace("'", "")
+    s = s.replace("-", "")
     return s.strip().lower()
 
 
@@ -266,8 +268,8 @@ if __name__ == '__main__':
             lang_entry["hits"] += 1
 
         if ref_text:
-            pred = pred_text.strip().lower()
-            gt = ref_text.strip().lower()
+            pred = _normalize_text(pred_text.strip().lower())
+            gt = _normalize_text(ref_text.strip().lower())
 
             video_errors = levenshtein(pred.split(), gt.split())
             video_words = len(gt.split())
