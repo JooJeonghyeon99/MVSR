@@ -2,6 +2,7 @@ import json
 import numpy as np
 import torch, cv2, pickle, sys, os
 from datetime import datetime
+from tqdm import tqdm
 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -98,8 +99,14 @@ def run(faces, model, visual_encoder):
         with torch.no_grad():
             with autocast('cuda', enabled=args.fp16):
                 start_symbol = [50258]
-                if args.lang_id is not None:
-                    start_symbol.append(tokenizer.encode(f"<|{args.lang_id}|>")[0])
+                if args.lang_id is not None: ### modification: add function for get multiple language ids ###
+                    if "-" in args.lang_id:
+                        lang_tokens = args.lang_id.split("-")
+                        for lang_token in lang_tokens:
+                            lang_token = lang_token.strip()
+                            start_symbol.append(tokenizer.encode(f"<|{lang_token}|>")[0])
+                    else:
+                        start_symbol.append(tokenizer.encode(f"<|{args.lang_id}|>")[0])
 
                 beam_outs, beam_scores = forward_pass(model, encoder_output, src_mask, start_symbol)
                 out = beam_outs[0][0]
@@ -218,7 +225,7 @@ if __name__ == '__main__':
         "hits": 0,
     })
 
-    for index, video_path in enumerate(video_paths, start=1):
+    for index, video_path in enumerate(tqdm(video_paths, desc="Inference"), start=1):
         total_samples += 1
         base, _ = os.path.splitext(video_path)
         ref_txt = base + '.txt'
